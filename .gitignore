@@ -1,0 +1,11 @@
+/private/
+/node_modules/
+/dist/
+/.local/
+*.log
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
