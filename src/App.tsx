@@ -3,7 +3,7 @@ import { ArrowDownToLine, ArrowRight, Box, Check, ChevronDown, CircleHelp, FileJ
 import { Button } from './components/ui/button';
 import { JsonSource } from './components/JsonSource';
 import { LayoutPreview } from './components/LayoutPreview';
-import { assetMapFromText, decodeCopyPaste, exportCar, importEdits, makeProject, nativeFile, readJson, toJson, type JsonObject, type Project } from './lib/converter';
+import { assetFileFromText, decodeCopyPaste, exportCar, importEdits, makeProject, nativeFile, readJson, toJson, type JsonObject, type Project } from './lib/converter';
 import { decodeNative } from './lib/prefab';
 
 function download(name:string,data:string|Uint8Array) {
@@ -26,12 +26,13 @@ function Upload({title,subtitle,accept,onFile,fileName,onClear,compact=false}:{t
 function App() {
   const [mode,setMode]=useState<'out'|'back'>('out'),[project,setProject]=useState<Project|null>(null),[originalName,setOriginalName]=useState('');
   const [edited,setEdited]=useState<Uint8Array|JsonObject|null>(null),[editedName,setEditedName]=useState(''),[assets,setAssets]=useState<Map<number,string>>(new Map());
+  const [entityPaths,setEntityPaths]=useState<Set<string>|undefined>();
   const [error,setError]=useState(''),[busy,setBusy]=useState(false),[removeMissing,setRemoveMissing]=useState(false),[guide,setGuide]=useState(false),[format,setFormat]=useState<'native'|'json'>('native'),[downloaded,setDownloaded]=useState(false);
   const exported=useMemo(()=>{if(!project)return null;try{return exportCar(project);}catch{return null;}},[project]);
   const result=useMemo(()=>{
     if(!project||!edited)return {data:null,error:''};
-    try{return {data:importEdits(project,edited,{assets,removeMissing}),error:''};}catch(e){return {data:null,error:e instanceof Error?e.message:'Conversion failed.'};}
-  },[project,edited,assets,removeMissing]);
+    try{return {data:importEdits(project,edited,{assets,entityPaths,removeMissing}),error:''};}catch(e){return {data:null,error:e instanceof Error?e.message:'Conversion failed.'};}
+  },[project,edited,assets,entityPaths,removeMissing]);
   function loadJson(text:string,name:string,kind:'original'|'edited') {
     const data=readJson(text);
     if(kind==='original') {
@@ -52,14 +53,14 @@ function App() {
     setError('');setBusy(true);setDownloaded(false);
     try{
       if(file.size>64*1024*1024)throw new Error('Please choose a file smaller than 64 MB.');
-      if(kind==='assets')setAssets(assetMapFromText(await file.text()));
+      if(kind==='assets') {const catalog=assetFileFromText(await file.text());setAssets(catalog.paths);setEntityPaths(catalog.entityPaths);}
       else if(kind==='edited'&&file.name.toLowerCase().endsWith('.prefab')) {
         const data=new Uint8Array(await file.arrayBuffer());
         decodeNative(data);setEdited(data);setEditedName(file.name);
       } else loadJson(await file.text(),file.name,kind);
     }catch(e){setError(e instanceof Error?e.message:'Could not read file.');}finally{setBusy(false);}
   };
-  const reset=()=>{setProject(null);setOriginalName('');setEdited(null);setEditedName('');setError('');setDownloaded(false);setRemoveMissing(false);setAssets(new Map());};
+  const reset=()=>{setProject(null);setOriginalName('');setEdited(null);setEditedName('');setError('');setDownloaded(false);setRemoveMissing(false);setAssets(new Map());setEntityPaths(undefined);};
   const warnings=mode==='out'?exported?.warnings:result.data?.warnings;
   const preview=mode==='out'?exported?.prefabs:result.data?.prefabs;
   const ready=mode==='out'?!!exported:!!result.data;
@@ -83,7 +84,7 @@ function App() {
               <Upload compact title="Open RustEdit export" subtitle=".prefab or CopyPaste .json" accept=".prefab,.json" onFile={f=>void onFile(f,'edited')} fileName={editedName} onClear={()=>{setEdited(null);setEditedName('');setError('');}}/>
             </JsonSource>
             <label className="checkbox-option"><input type="checkbox" checked={removeMissing} onChange={e=>setRemoveMissing(e.target.checked)}/><span>Remove missing props<small>Props absent from the edited file will be deleted.</small></span></label>
-            <details className="asset-details"><summary>Asset paths {assets.size>0&&<span>{assets.size} loaded</span>}<ChevronDown size={13}/></summary><p>For new assets, load RustEdit’s stringpool.txt.</p><label className="asset-upload"><FolderOpen size={14}/> Load asset map<input className="sr-only" type="file" accept=".txt,.json" onChange={e=>{if(e.target.files?.[0])void onFile(e.target.files[0],'assets');e.target.value='';}}/></label></details>
+            <details className="asset-details" open={!!result.error}><summary>Asset paths {assets.size>0&&<span>{assets.size} {entityPaths?'entities':'paths'}</span>}<ChevronDown size={13}/></summary><p>stringpool.txt resolves IDs. New props need a <a href="https://github.com/niposch/rustedit-rustcars-converter#new-props" target="_blank" rel="noreferrer">server catalog</a>.</p><label className="asset-upload"><FolderOpen size={14}/> Load asset map or catalog<input className="sr-only" type="file" accept=".txt,.json" onChange={e=>{if(e.target.files?.[0])void onFile(e.target.files[0],'assets');e.target.value='';}}/></label></details>
           </>:null}
           {project&&<button className="save-project" onClick={()=>download(`${project.filename}.rustcar-project.json`,toJson(project))}><ArrowDownToLine size={14}/> Save project</button>}
         </div>

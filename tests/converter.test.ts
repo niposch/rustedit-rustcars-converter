@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { assetMapFromText, decodeCopyPaste, exportCar, importEdits, makeProject, nativeFile, readJson, toJson, ORIGIN_PATH, LEGACY_ORIGIN_PATH } from '../src/lib/converter.ts';
+import { assetFileFromText, assetMapFromText, decodeCopyPaste, exportCar, importEdits, makeProject, nativeFile, readJson, toJson, ORIGIN_PATH, LEGACY_ORIGIN_PATH } from '../src/lib/converter.ts';
 import { decodeLz4Block, decodeNative, encodeNative, prefabId } from '../src/lib/prefab.ts';
 import { compose, distance, euler, one, quaternion, relative, rotate, zero } from '../src/lib/math.ts';
 
@@ -111,13 +111,69 @@ test('untagged CopyPaste matches repeated assets by position and keeps missing s
   assert.equal(toJson(result.car.PropConfigs[0].Scale),toJson(p.car.PropConfigs[0].Scale));
   assert.ok(result.warnings.some(w=>w.includes('matched by asset')));
 });
-test('new native assets require a path map and never silently drop',()=>{
+test('new native assets require entity validation as well as a resolved path',()=>{
   const p=project(),out=exportCar(p),newPath='assets/test/new.prefab';
   out.prefabs.push({...out.prefabs[0],id:prefabId(newPath),category:'Decor',path:newPath,position:{x:8,y:0,z:0}});
   const file=nativeFile(out);
   assert.throws(()=>importEdits(p,file),/Unknown prefab IDs/);
-  const result=importEdits(p,file,{assets:assetMapFromText(`${prefabId(newPath)} - ${newPath}`)});
+  const paths=assetMapFromText(`${prefabId(newPath)} - ${newPath}`);
+  assert.throws(()=>importEdits(p,file,{assets:paths}),/Unverified new car prop/);
+  const catalog=assetFileFromText(toJson({format:'rustcar-prefab-catalog',version:1,entities:[newPath]}));
+  const result=importEdits(p,file,{assets:catalog.paths,entityPaths:catalog.entityPaths});
   assert.equal(result.added,1);assert.equal(result.car.PropConfigs[2].PrefabPath,newPath);
+  assert.equal(Number(result.car.PropConfigs[2].PartType),3);
+  assert.equal(Number(result.car.PropConfigs[2].PropType),3);
+  assert.equal(result.car.PropConfigs[2].DetectCollisions,false);
+  assert.equal(toJson(result.car.PropConfigs.slice(0,2)),toJson(p.car.PropConfigs));
+  assert.equal(toJson(result.car.FuelSettings),toJson(p.car.FuelSettings));
+});
+
+test('CopyPaste scenery additions are blocked even when their paths are known',()=>{
+  const p=project(),out=exportCar(p),scenery='assets/content/props/test-decoration.prefab';
+  out.copyPaste.entities.push({prefabname:scenery,pos:{x:'8',y:'1',z:'0'},rot:zero()});
+  const original=toJson(p.car);
+  assert.throws(()=>importEdits(p,out.copyPaste),/Unverified new car prop/);
+  assert.throws(()=>importEdits(p,out.copyPaste,{entityPaths:new Set([path])}),/Unsupported car prop/);
+  assert.equal(toJson(p.car),original);
+});
+
+test('a duplicate of an original entity can be added without a server catalog',()=>{
+  const p=project(),out=exportCar(p);
+  out.prefabs.push({...out.prefabs[1],category:'Decor',position:{x:8,y:1,z:0}});
+  const result=importEdits(p,nativeFile(out));
+  assert.equal(result.added,1);assert.equal(result.car.PropConfigs.length,3);
+  assert.equal(toJson(result.car.PropConfigs.slice(0,2)),toJson(p.car.PropConfigs));
+  assert.equal(result.car.PropConfigs[2].PartType,3);
+  assert.equal(result.car.PropConfigs[2].PropType,3);
+});
+
+test('a gib path in the original car does not verify a new entity prop',()=>{
+  const p=project();p.car.PropConfigs=[prop(0,{PropType:2,GibName:'synthetic-gib'})];
+  const cp={entities:[{prefabname:path,pos:{x:8,y:0,z:0},rot:zero()},{prefabname:ORIGIN_PATH,pos:zero(),rot:zero()}]};
+  assert.throws(()=>importEdits(p,cp),/Unverified new car prop/);
+});
+
+test('tagged asset replacements cannot bypass entity validation or change special parts',()=>{
+  const p=project(),out=exportCar(p),newPath='assets/test/replacement.prefab';
+  out.copyPaste.entities[1].prefabname=newPath;
+  assert.throws(()=>importEdits(p,out.copyPaste),/Unverified new car prop/);
+  const result=importEdits(p,out.copyPaste,{entityPaths:new Set([newPath])});
+  assert.equal(result.car.PropConfigs[1].PrefabPath,newPath);
+  out.copyPaste.entities[0].prefabname=newPath;
+  assert.throws(()=>importEdits(p,out.copyPaste,{entityPaths:new Set([newPath])}),/Replacing a special car part/);
+});
+
+test('server catalog parsing validates format, paths, and version; plain path maps stay unverified',()=>{
+  const catalog=assetFileFromText(toJson({format:'rustcar-prefab-catalog',version:1,entities:[path]}));
+  assert.equal(catalog.paths.get(prefabId(path)),path);assert.ok(catalog.entityPaths?.has(path));
+  assert.equal(assetFileFromText(`${prefabId(path)} - ${path}`).entityPaths,undefined);
+  assert.equal(assetFileFromText(toJson({[prefabId(path)]:path})).entityPaths,undefined);
+  for(const invalid of [
+    {format:'rustcar-prefab-catalog',version:2,entities:[path]},
+    {format:'rustcar-prefab-catalog',version:1,entities:[]},
+    {format:'rustcar-prefab-catalog',version:1,entities:[null]},
+    {format:'rustcar-prefab-catalog',version:1,entities:['not-a-prefab']},
+  ]) assert.throws(()=>assetFileFromText(toJson(invalid)),/Invalid/);
 });
 test('CopyPaste root rotations use radians, children use degrees',()=>{
   const result=decodeCopyPaste({entities:[{prefabname:path,pos:zero(),rot:{x:0,y:Math.PI/2,z:0},children:[{prefabname:path,pos:{x:0,y:0,z:1},rot:{x:0,y:90,z:0}}]}]});

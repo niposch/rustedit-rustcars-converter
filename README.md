@@ -21,6 +21,20 @@ Edit [RustCar](https://karuza.dev/store/product/566c04c2-c4a7-4ba3-983c-3fdb3624
 
 Keep the original JSON. Some runtime parts cannot appear correctly in RustEdit. Missing parts stay in the original configuration by default.
 
+## New props
+
+RustEdit includes scenery that RustCar cannot spawn. A stringpool path does not confirm that a prefab is a server entity. The converter blocks unverified additions. You can duplicate entity prefabs already used by the original car without a catalog.
+
+To use other entity prefabs:
+
+1. Install [RustCarConverterCatalog.cs](tools/RustCarConverterCatalog.cs) in your server's plugins folder. This optional MIT helper is separate from RustCar.
+2. Run `rustcarconverter.catalog` in the server console after the server starts.
+3. Download `RustCarConverter/prefabs.json` from the server's data folder. Load it under **Asset paths** in the converter.
+
+The helper reads prefab metadata. It does not spawn entities or export vehicle data. The catalog checks for a `BaseEntity` component; it is not a full vehicle spawn test. Re-export it after game updates.
+
+New props are decorative. The converter does not create wheel physics, seats, engines, or other functional parts. Changing the asset of an existing special part is blocked.
+
 ## Run locally
 
 Requires Node.js 22 or later.

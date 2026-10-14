@@ -108,13 +108,30 @@ export function assetMapFromText(text:string):Map<number,string> {
   if(!map.size) throw new Error('No prefab paths found. Use RustEdit stringpool.txt or an ID-to-path JSON object.');
   return map;
 }
+export function assetFileFromText(text:string):{paths:Map<number,string>; entityPaths?:Set<string>} {
+  if(text.trim().startsWith('{')) {
+    const data=readJson(text);
+    if(data?.format==='rustcar-prefab-catalog') {
+      if(Number(data.version)!==1||!Array.isArray(data.entities)||!data.entities.length) throw new Error('Invalid server prefab catalog.');
+      const paths=new Map<number,string>(),entityPaths=new Set<string>();
+      for(const path of data.entities) {
+        if(typeof path!=='string'||!/^assets\/.+\.prefab$/.test(path)) throw new Error('Invalid prefab path in server catalog.');
+        const id=prefabId(path);
+        if(paths.has(id)&&paths.get(id)!==path) throw new Error('Conflicting prefab IDs in server catalog.');
+        paths.set(id,path);entityPaths.add(path);
+      }
+      return {paths,entityPaths};
+    }
+  }
+  return {paths:assetMapFromText(text)};
+}
 function at(car:JsonObject,key:string):JsonObject {
   let value:any=car;
   for(const part of key.split('/')) { if(['__proto__','prototype','constructor'].includes(part)) throw new Error('Invalid prop key.'); value=value?.[part]; }
   if(!value||typeof value!=='object') throw new Error('Project prop key was not found.');
   return value;
 }
-export function importEdits(project:Project,input:Uint8Array|JsonObject,options:{removeMissing?:boolean; assets?:Map<number,string>}={}):ImportResult {
+export function importEdits(project:Project,input:Uint8Array|JsonObject,options:{removeMissing?:boolean; assets?:Map<number,string>; entityPaths?:ReadonlySet<string>}={}):ImportResult {
   const native=input instanceof Uint8Array, imported=native?decodeNative(input):decodeCopyPaste(input);
   const car=clone(project.car), refs=collectProps(car), editable=refs.filter(r=>r.editable);
   const assets=new Map(options.assets), assignments=new Map<string,Prefab>(), used=new Set<Prefab>(), warnings:string[]=[];
@@ -130,6 +147,15 @@ export function importEdits(project:Project,input:Uint8Array|JsonObject,options:
   const unresolved=[...new Set(prefabs.filter(p=>!assets.has(p.id)).map(p=>p.id))];
   if(unresolved.length) throw new Error(`Unknown prefab IDs: ${unresolved.slice(0,8).join(', ')}${unresolved.length>8?'…':''}. Load RustEdit stringpool.txt under Asset paths to resolve new assets.`);
   prefabs.forEach(p=>p.path=assets.get(p.id)!);
+  // A path/ID list includes scenery too; it cannot prove a BaseEntity exists.
+  // These original prop modes already require an entity at their prefab path.
+  const knownEntities=new Set(refs.filter(r=>[1,3,6,8].includes(Number(r.prop.PropType))&&r.prop.PrefabPath).map(r=>r.prop.PrefabPath));
+  const requireEntity=(path:string)=>{
+    const verified=options.entityPaths?options.entityPaths.has(path):knownEntities.has(path);
+    if(!verified) throw new Error(options.entityPaths
+      ?`Unsupported car prop: ${path}. This prefab has no BaseEntity entry in the server catalog. Use a spawnable entity prefab in RustEdit.`
+      :`Unverified new car prop: ${path}. RustEdit includes scenery that RustCar cannot spawn. Load a server prefab catalog under Asset paths, or use an entity prefab already used by this car.`);
+  };
   // Native categories and our JSON entity keys survive edits that retain metadata.
   for(const ref of editable) {
     const candidates=prefabs.filter(p=>!used.has(p)&&p.category===`RCW|${ref.key}`);
@@ -157,7 +183,11 @@ export function importEdits(project:Project,input:Uint8Array|JsonObject,options:
         const same=field==='Rotation'?rotationClose(original,v):distance(original,v)<(field==='Location'?1e-4:1e-5);
         if(!same) prop[field]=v;
       }
-      if(p.path!==prop.PrefabPath) prop.PrefabPath=p.path;
+      if(p.path!==prop.PrefabPath) {
+        if(Number(prop.PartType)!==3||![1,3].includes(Number(prop.PropType))) throw new Error('Replacing a special car part with a different asset is unsupported. Keep its asset, or add a separate decorative prop.');
+        requireEntity(p.path!);
+        prop.PrefabPath=p.path;
+      }
       // Existing prop metadata (including skins) always belongs to the original car.
       worlds.set(ref.key,ref.parentKey?compose(parent,transform(prop)):transform(prop));
     } else worlds.set(ref.key,ref.parentKey?compose(parent,transform(prop)):transform(prop));
@@ -173,8 +203,11 @@ export function importEdits(project:Project,input:Uint8Array|JsonObject,options:
     }
   } else if(missingRefs.length) warnings.push(`${missingRefs.length} missing props kept from the original. Enable “Remove missing props” to delete them.`);
   const additions=prefabs.filter(p=>!used.has(p));
-  for(const p of additions) car.PropConfigs.push({PartType:3,PropType:3,PrefabPath:p.path,NetworkPrefabOverride:null,SkinId:p.skin??0,SkinId2:0,ItemId:0,Location:p.position,Rotation:p.rotation,Scale:p.scale,GibName:null,DetectCollisions:false,ModelState:null,Flags:0,SubPropConfigs:null});
-  if(additions.length) warnings.push(`${additions.length} new props use PartType 3 / PropType 3. Check special components in the car configuration.`);
+  for(const p of additions) {
+    requireEntity(p.path!);
+    car.PropConfigs.push({PartType:3,PropType:3,PrefabPath:p.path,NetworkPrefabOverride:null,SkinId:p.skin??0,SkinId2:0,ItemId:0,Location:p.position,Rotation:p.rotation,Scale:p.scale,GibName:null,DetectCollisions:false,ModelState:null,Flags:0,SubPropConfigs:null});
+  }
+  if(additions.length) warnings.push(`${additions.length} new props added as decorative entities with collisions disabled. Seats, engines and other functional parts need separate configuration.`);
   if(car.PropConfigs.length===0) throw new Error('The edit would leave the car with zero PropConfigs, which RustCar rejects.');
   return {car,prefabs,matched:assignments.size,added:additions.length,missing:missingRefs.length,removed:options.removeMissing?missingRefs.length:0,warnings};
 }
